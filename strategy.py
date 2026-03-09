@@ -126,6 +126,11 @@ def score_token(features: dict) -> float:
     if volume > 100000:
         score += 0.05
 
+    # --- Trade count activity ---
+    trades = features.get("trade_count_24h", 0)
+    if trades > 5000:
+        score += 0.04  # high trading activity
+
     # --- Liquidity depth ---
     if liquidity > 50000:
         score += 0.05
