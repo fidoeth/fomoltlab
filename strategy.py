@@ -130,11 +130,24 @@ def score_token(features: dict) -> float:
     if features.get("has_website", 0):
         score += 0.03
 
+    # --- Liquidity-to-mcap ratio ---
+    liq_mcap = features.get("liquidity_to_mcap", 0)
+    if liq_mcap > 0:
+        if liq_mcap < 0.03:
+            score -= 0.08  # overvalued, easy to dump
+        elif liq_mcap > 0.1:
+            score += 0.05  # well-backed by liquidity
+
     # --- Early price action ---
     early_change = features.get("early_price_change_pct", 0)
     if early_change > 50:
         score += 0.05
     elif early_change < -50:
         score -= 0.1
+
+    # --- Unique wallets diversity ---
+    wpt = features.get("wallets_per_trade", 0)
+    if wpt > 0.4:
+        score += 0.03  # more unique wallets per trade = organic
 
     return max(0.0, min(1.0, score))
