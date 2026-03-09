@@ -79,30 +79,30 @@ def score_token(features: dict) -> float:
     # --- Data-driven signals (if calibrated) ---
     moon_stats = _stats.get("moon", {})
     rug_stats = _stats.get("rug", {})
+    down_stats = _stats.get("down", {})
 
     if moon_stats and rug_stats:
-        # Tokens that look more like moons than rugs on key features
-        moon_liq = moon_stats.get("liquidity", 20000)
-        rug_liq = rug_stats.get("liquidity", 10000)
-        if liquidity >= moon_liq:
-            score += 0.05
-        elif liquidity <= rug_liq:
-            score -= 0.05
+        # Compare token to moon vs rug/down profiles
+        moon_score = 0
+        bad_score = 0
 
-        moon_holders = moon_stats.get("holder_count", 200)
-        rug_holders = rug_stats.get("holder_count", 50)
-        if holders >= moon_holders:
-            score += 0.05
-        elif holders <= rug_holders:
-            score -= 0.05
+        for key, weight in [("liquidity", 1), ("holder_count", 1),
+                            ("volume_per_holder", 1), ("buy_sell_ratio", 1.5)]:
+            val = features.get(key, 0)
+            moon_val = moon_stats.get(key, 0)
+            rug_val = rug_stats.get(key, 0)
+            down_val = down_stats.get(key, 0) if down_stats else rug_val
 
-        moon_vph = moon_stats.get("volume_per_holder", 500)
-        rug_vph = rug_stats.get("volume_per_holder", 200)
-        vph = features.get("volume_per_holder", 0)
-        if vph >= moon_vph:
-            score += 0.05
-        elif vph <= rug_vph:
-            score -= 0.03
+            if moon_val > 0 and val >= moon_val:
+                moon_score += weight
+            if rug_val > 0 and val <= rug_val:
+                bad_score += weight
+            if down_val > 0 and val <= down_val:
+                bad_score += weight * 0.5
+
+        # Net calibration signal
+        net = moon_score - bad_score
+        score += net * 0.03  # scale to reasonable range
 
     # --- Buy/sell ratio ---
     bs_ratio = features.get("buy_sell_ratio", 1.0)
