@@ -151,16 +151,27 @@ def score_token(features: dict) -> float:
     if sell_vol > buy_vol > 0:
         score -= 0.05  # net selling pressure in dollar terms
 
+    # --- Security warnings ---
+    warnings = features.get("security_warnings", 0)
+    if warnings >= 2:
+        score -= 0.05
+
     # --- Early price action (strongest signal) ---
     early_change = features.get("early_price_change_pct", 0)
-    if early_change > 20:
-        score += 0.08  # strong early momentum (moon median = +21%)
-    elif early_change < -30:
-        score -= 0.12  # early dump (rug median = -63%)
+    if early_change > 50:
+        score += 0.10  # very strong momentum
+    elif early_change > 20:
+        score += 0.06
+    elif early_change < -50:
+        return 0.15  # hard reject — deep early dump
+    elif early_change < -20:
+        score -= 0.10
 
     # --- Early volatility (pump_dump has med=148, moon=75) ---
     early_vol = features.get("early_volatility", 0)
-    if early_vol > 150:
-        score -= 0.05  # wild swings = pump_dump signal
+    if early_vol > 200:
+        score -= 0.08  # extreme swings = pump_dump signal
+    elif early_vol > 100:
+        score -= 0.03
 
     return max(0.0, min(1.0, score))
