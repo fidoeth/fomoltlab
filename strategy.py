@@ -28,52 +28,103 @@ Available features (all numeric unless noted):
 """
 
 
+_stats = {}
+
+
+def calibrate(train_set):
+    """Learn feature averages per label from training data."""
+    global _stats
+    by_label = {}
+    for entry in train_set:
+        label = (entry.get("outcome") or {}).get("label", "unknown")
+        if label not in by_label:
+            by_label[label] = []
+        by_label[label].append(entry["features"])
+
+    # Compute median values for key features per label
+    def median(vals):
+        s = sorted(vals)
+        n = len(s)
+        return s[n // 2] if n else 0
+
+    for label, feats_list in by_label.items():
+        _stats[label] = {}
+        for key in ["liquidity", "holder_count", "buy_sell_ratio", "volume_24h",
+                     "buy_volume_usd", "sell_volume_usd", "early_volatility",
+                     "volume_per_holder", "early_price_change_pct"]:
+            vals = [f.get(key, 0) for f in feats_list if f.get(key, 0) != 0]
+            _stats[label][key] = median(vals) if vals else 0
+
+
 def score_token(features: dict) -> float:
     """
     Score a token from 0.0 (skip) to 1.0 (strong buy).
 
-    Baseline strategy: simple heuristic filters.
+    v4: data-driven thresholds from calibration + baseline filters.
     """
-    score = 0.5  # neutral starting point
+    score = 0.5
 
-    # --- Liquidity filter ---
+    # --- Hard rejects ---
     liquidity = features.get("liquidity", 0)
     if liquidity < 5000:
-        return 0.1  # too thin
-    if liquidity > 50000:
-        score += 0.05
-
-    # --- Holder count ---
+        return 0.1
     holders = features.get("holder_count", 0)
     if holders < 20:
-        return 0.1  # too few holders, likely insider
-    if holders > 200:
-        score += 0.05
+        return 0.1
+    if features.get("security_failures", 0) > 0:
+        return 0.1
+    if features.get("overall_risk", "unknown") == "high":
+        return 0.1
+
+    # --- Data-driven signals (if calibrated) ---
+    moon_stats = _stats.get("moon", {})
+    rug_stats = _stats.get("rug", {})
+
+    if moon_stats and rug_stats:
+        # Tokens that look more like moons than rugs on key features
+        moon_liq = moon_stats.get("liquidity", 20000)
+        rug_liq = rug_stats.get("liquidity", 10000)
+        if liquidity >= moon_liq:
+            score += 0.05
+        elif liquidity <= rug_liq:
+            score -= 0.05
+
+        moon_holders = moon_stats.get("holder_count", 200)
+        rug_holders = rug_stats.get("holder_count", 50)
+        if holders >= moon_holders:
+            score += 0.05
+        elif holders <= rug_holders:
+            score -= 0.05
+
+        moon_vph = moon_stats.get("volume_per_holder", 500)
+        rug_vph = rug_stats.get("volume_per_holder", 200)
+        vph = features.get("volume_per_holder", 0)
+        if vph >= moon_vph:
+            score += 0.05
+        elif vph <= rug_vph:
+            score -= 0.03
 
     # --- Buy/sell ratio ---
     bs_ratio = features.get("buy_sell_ratio", 1.0)
     if bs_ratio > 1.2:
-        score += 0.1  # more buying than selling
+        score += 0.1
     elif bs_ratio < 0.8:
-        score -= 0.1  # more selling
+        score -= 0.1
 
     # --- Security ---
-    risk = features.get("overall_risk", "unknown")
-    if risk == "high":
-        return 0.1
-    if risk == "low":
+    if features.get("overall_risk", "unknown") == "low":
         score += 0.05
 
-    failures = features.get("security_failures", 0)
-    if failures > 0:
-        return 0.1
-
-    # --- Volume activity ---
+    # --- Volume ---
     volume = features.get("volume_24h", 0)
     if volume > 100000:
         score += 0.05
 
-    # --- Social presence ---
+    # --- Liquidity depth ---
+    if liquidity > 50000:
+        score += 0.05
+
+    # --- Social ---
     if features.get("has_twitter", 0):
         score += 0.05
     if features.get("has_website", 0):
@@ -82,9 +133,8 @@ def score_token(features: dict) -> float:
     # --- Early price action ---
     early_change = features.get("early_price_change_pct", 0)
     if early_change > 50:
-        score += 0.05  # momentum
+        score += 0.05
     elif early_change < -50:
-        score -= 0.1  # dumping early
+        score -= 0.1
 
-    # Clamp to [0, 1]
     return max(0.0, min(1.0, score))
