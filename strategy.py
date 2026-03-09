@@ -86,12 +86,16 @@ def score_token(features: dict) -> float:
         moon_score = 0
         bad_score = 0
 
+        pump_stats = _stats.get("pump_dump", {})
+
         for key, weight in [("liquidity", 1), ("holder_count", 1),
-                            ("volume_per_holder", 1), ("buy_sell_ratio", 1.5)]:
+                            ("volume_per_holder", 1), ("buy_sell_ratio", 1.5),
+                            ("early_price_change_pct", 2)]:
             val = features.get(key, 0)
             moon_val = moon_stats.get(key, 0)
             rug_val = rug_stats.get(key, 0)
             down_val = down_stats.get(key, 0) if down_stats else rug_val
+            pump_val = pump_stats.get(key, 0) if pump_stats else rug_val
 
             if moon_val > 0 and val >= moon_val:
                 moon_score += weight
@@ -99,6 +103,8 @@ def score_token(features: dict) -> float:
                 bad_score += weight
             if down_val > 0 and val <= down_val:
                 bad_score += weight * 0.5
+            if pump_val > 0 and val <= pump_val:
+                bad_score += weight * 0.3
 
         # Net calibration signal
         net = moon_score - bad_score
