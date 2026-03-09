@@ -131,23 +131,30 @@ def score_token(features: dict) -> float:
         score += 0.03
 
     # --- Liquidity-to-mcap ratio ---
+    # Counter-intuitive: rugs have HIGH liq/mcap (crashed price), moons have LOW
     liq_mcap = features.get("liquidity_to_mcap", 0)
     if liq_mcap > 0:
-        if liq_mcap < 0.03:
-            score -= 0.08  # overvalued, easy to dump
-        elif liq_mcap > 0.1:
-            score += 0.05  # well-backed by liquidity
+        if liq_mcap > 0.35:
+            score -= 0.08  # looks like crashed/rugged token
+        elif liq_mcap < 0.15:
+            score += 0.03  # healthy valuation relative to liquidity
 
-    # --- Early price action ---
+    # --- Buy/sell volume USD imbalance (pump_dump detection) ---
+    buy_vol = features.get("buy_volume_usd", 0)
+    sell_vol = features.get("sell_volume_usd", 0)
+    if sell_vol > buy_vol > 0:
+        score -= 0.05  # net selling pressure in dollar terms
+
+    # --- Early price action (strongest signal) ---
     early_change = features.get("early_price_change_pct", 0)
-    if early_change > 50:
-        score += 0.05
-    elif early_change < -50:
-        score -= 0.1
+    if early_change > 20:
+        score += 0.08  # strong early momentum (moon median = +21%)
+    elif early_change < -30:
+        score -= 0.12  # early dump (rug median = -63%)
 
-    # --- Unique wallets diversity ---
-    wpt = features.get("wallets_per_trade", 0)
-    if wpt > 0.4:
-        score += 0.03  # more unique wallets per trade = organic
+    # --- Early volatility (pump_dump has med=148, moon=75) ---
+    early_vol = features.get("early_volatility", 0)
+    if early_vol > 150:
+        score -= 0.05  # wild swings = pump_dump signal
 
     return max(0.0, min(1.0, score))
