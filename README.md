@@ -40,12 +40,12 @@ This takes ~10 minutes. It discovers Solana tokens across multiple age ranges, p
 
 | Label | Criteria | Meaning |
 |-------|----------|---------|
-| moon | peaked 2x+, ended 20%+ | pumped and held |
-| up | ended 20%+ | steady gainer |
-| crab | -30% to +20% | went sideways |
+| moon | peaked 100%+ and ended 20%+ | pumped and held |
+| pump_dump | peaked 100%+ and ended <20% | pumped then crashed |
+| rug | ended -70% or worse | total loss |
+| up | ended +20% or better | steady gainer |
 | down | ended -30% to -70% | lost value |
-| pump_dump | peaked 2x+, ended <20% | pumped then crashed |
-| rug | ended -70%+ | total loss |
+| crab | everything else | went sideways |
 
 ### 3. Write your strategy
 
@@ -55,7 +55,7 @@ Edit `strategy.py` (or copy the starter template):
 cp strategy_starter.py strategy.py
 ```
 
-Your strategy has two functions:
+Your strategy has three functions:
 
 **`score_token(features)`** — Returns 0.0 to 1.0. Tokens scoring > 0.5 get a buy signal.
 
@@ -111,22 +111,28 @@ The scanner discovers new tokens via fomolt, scores them with your strategy, exe
 
 | Feature | Description |
 |---------|-------------|
-| `liquidity` | Pool liquidity in USD |
+| `address`, `name`, `symbol` | Token identifiers (string) |
+| `creation_time` | Unix timestamp of token creation |
+| `price` | Current token price (USD) |
 | `market_cap` | Token market cap |
+| `liquidity` | Pool liquidity in USD |
 | `holder_count` | Number of holders |
 | `volume_24h` | 24h trading volume |
 | `trade_count_24h` | Number of trades in 24h |
-| `buy_sell_ratio` | buy_count / sell_count |
+| `buy_count_24h` / `sell_count_24h` | Buy and sell counts |
+| `unique_wallets_24h` | Unique traders in 24h |
 | `buy_volume_usd` / `sell_volume_usd` | Dollar volume by side |
+| `buy_sell_ratio` | buy_count / sell_count |
 | `liquidity_to_mcap` | Liquidity / market cap ratio |
 | `volume_per_holder` | Volume per holder |
+| `wallets_per_trade` | Unique wallets / trade count |
 | `has_twitter` / `has_website` / `has_telegram` | Social presence (0/1) |
 | `overall_risk` | "low", "medium", "high", "unknown" |
 | `security_warnings` / `security_failures` | Security audit counts |
 | `early_price_change_pct` | % price change in first 6 hours |
-| `early_volatility` | Price range in first 6 hours (%) |
+| `early_volatility` | Price range / entry price in first 6 hours (%) |
 | `early_volume_total` | Total volume in first 6 hours |
-| `candle_count` | Number of OHLCV candles available |
+| `candle_count` | Number of valid OHLCV candles |
 
 ## Position dict (for sell_signal)
 
@@ -134,11 +140,14 @@ The scanner discovers new tokens via fomolt, scores them with your strategy, exe
 |-------|-------------|
 | `entry_price` | Price at buy |
 | `current_price` | Current candle close |
+| `high` / `low` | Current candle high and low |
 | `unrealized_return_pct` | Current % return |
 | `peak_return_pct` | Max % return seen so far |
 | `drawdown_from_peak_pct` | % drop from peak |
 | `candles_held` | Hours since entry (1H candles) |
 | `candles_since_peak` | Hours since peak price |
+| `volume` / `volume_usd` | Current candle volume |
+| `total_candles` | Total candles in observation |
 
 ## Strategy ideas
 
