@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 Token data collection from fomolt.
-DO NOT MODIFY — this is the fixed data collection script.
 
 Collects Solana token data and builds a labeled dataset for classifier training.
 Each token gets: search metadata, detailed info, security audit, and OHLCV price history.

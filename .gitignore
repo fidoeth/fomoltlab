@@ -1,4 +1,7 @@
 data/
 run.log
+run_*.log
 __pycache__/
 *.pyc
+.claude/
+program.md
