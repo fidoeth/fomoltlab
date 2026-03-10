@@ -107,7 +107,6 @@ def score_token(features: dict) -> float:
         return 0.1
     if features.get("overall_risk", "unknown") == "high":
         return 0.1
-
     # --- Data-driven signals (if calibrated) ---
     moon_stats = _stats.get("moon", {})
     rug_stats = _stats.get("rug", {})

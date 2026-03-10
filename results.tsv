@@ -22,3 +22,4 @@ c71f7c2	120.04	79.24	70.7	discard	v20: compound momentum+buy - diluted results
 4c088c3	176.16	103.43	84.8	discard	v22: unique wallets min filter - too aggressive
 6f2a6b3	161.04	92.39	73.0	discard	v23: soft unique wallets - worse
 ---	---	---	---	---	NOTE: v1-v23 used non-deterministic hash() split. Below uses hashlib.md5 deterministic split + sell simulation.
+785c18d	156.08	106.45	72.5	keep	v24-infra: deterministic split + sell simulation baseline
