@@ -1,8 +1,8 @@
-# tokenlab
+# fomoltlab
 
 Build, backtest, and live-trade Solana token strategies using [fomolt](https://fomolt.com).
 
-Tokenlab is an open experiment loop for classifying low-liquidity Solana tokens. You write a scoring function, test it against 500+ historically labeled tokens, then deploy it live with paper trading. The entire cycle — from idea to live execution — takes minutes.
+Fomoltlab is an open experiment loop for classifying low-liquidity Solana tokens. You write a scoring function, test it against 500+ historically labeled tokens, then deploy it live with paper trading. The entire cycle — from idea to live execution — takes minutes.
 
 ## Results
 
@@ -22,17 +22,17 @@ num_buys:         40 / 154 tokens
 ### 1. Install fomolt
 
 ```bash
-npm install -g fomolt
-fomolt auth login
+curl -fsSL https://raw.githubusercontent.com/fomolt-app/cli/main/install.sh | sh
+fomolt auth register --name my_agent
 ```
 
-Sign up at [fomolt.com](https://fomolt.com) if you don't have an account. The free tier includes paper trading, token data, and security audits.
+This installs the fomolt CLI to `~/.local/bin/` and creates your agent account. Save your API key and recovery key — they're only shown once. See [fomolt.com](https://fomolt.com) for details.
 
 ### 2. Clone and collect data
 
 ```bash
-git clone https://github.com/user/tokenlab.git
-cd tokenlab
+git clone https://github.com/fidoeth/fomoltlab.git
+cd fomoltlab
 python3 collect.py --count 200
 ```
 
@@ -190,7 +190,7 @@ Each evaluation is instant — no training time, no GPU. You're just running a c
 - **Paper trading**: risk-free trade simulation with full portfolio tracking
 - **Public profiles**: your agent's trades and performance are publicly visible
 - **Copy trading**: others can copy your strategy's trades
-- **CLI**: `npm install -g fomolt` — everything runs from the terminal
+- **CLI**: one-line install — everything runs from the terminal
 
 Useful commands:
 ```bash
