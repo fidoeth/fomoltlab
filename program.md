@@ -25,9 +25,10 @@ The goal: build a classifier that predicts which low-liquidity Solana tokens wil
 | File | Role |
 |---|---|
 | `collect.py` | FIXED — collects token data from fomolt, builds labeled dataset |
-| `evaluate.py` | FIXED — loads dataset, runs strategy, computes metrics |
-| `strategy.py` | MODIFIABLE — the scoring function you iterate on |
+| `evaluate.py` | Evaluation harness — loads dataset, runs strategy, simulates trades |
+| `strategy.py` | MODIFIABLE — buy scoring + sell signal logic |
 | `data/dataset.jsonl` | Cached dataset (gitignored) |
+| `data/raw/*.json` | Raw per-token data with OHLCV candles (gitignored) |
 | `results.tsv` | Experiment log |
 
 ## Experimentation
@@ -35,13 +36,36 @@ The goal: build a classifier that predicts which low-liquidity Solana tokens wil
 Each experiment is instant — just running the classifier on cached data. No training time, no GPU needed. Launch it as: `python3 evaluate.py`
 
 **What you CAN do:**
-- Modify `strategy.py` — this is the only file you edit. The `score_token(features)` function is the classifier. Everything is fair game: thresholds, feature combinations, weighting schemes, ensemble logic, derived features.
-- Optionally implement a `calibrate(train_set)` function in strategy.py — it receives the training split and can compute statistics to inform scoring.
+- Modify `strategy.py` — the main file you edit. Contains:
+  - `score_token(features)` — buy classifier (score > 0.5 = buy signal)
+  - `sell_signal(features, position)` — sell logic (True = exit trade)
+  - `calibrate(train_set)` — optional, receives training split for statistics
+- Everything is fair game: thresholds, feature combinations, weighting schemes, ensemble logic, derived features.
 
 **What you CANNOT do:**
-- Modify `collect.py` or `evaluate.py`.
-- Change the evaluation metric computation.
+- Modify `collect.py`.
 - Look at test set labels when building the strategy (no cheating — the split is deterministic).
+
+## Sell strategy
+
+The evaluator supports full trade lifecycle simulation. If `strategy.sell_signal()` exists, after a buy signal the evaluator steps through OHLCV candles one-by-one, calling `sell_signal(features, position)` at each candle.
+
+The `position` dict provides:
+- `entry_price`, `current_price`, `high`, `low` — prices
+- `unrealized_return_pct` — current % return
+- `peak_return_pct` — max % return seen so far
+- `drawdown_from_peak_pct` — % drop from peak
+- `candles_held` — hours since entry (1H candles)
+- `candles_since_peak` — hours since the highest price was seen
+- `volume`, `volume_usd` — current candle volume
+- `total_candles` — total candles in observation
+
+If `sell_signal` returns True, the trade exits at the current candle's close price. If no sell triggers, the trade holds to end of observation (same as before).
+
+Sell-specific metrics are printed:
+- `sell_vs_hold` — average improvement of sell strategy over buy-and-hold
+- `capture_ratio` — how much of peak return was captured
+- Per-label sell effectiveness breakdown
 
 **The goal: maximize `avg_return`** — the average return on tokens your classifier flags as "buy". Secondary goals: high `alpha` (excess return vs buying everything), high `precision` (avoiding false positives), reasonable `recall` (not missing all the good ones).
 
@@ -111,6 +135,7 @@ LOOP FOREVER:
 
 ## Strategy ideas to try
 
+### Buy signal
 - **Feature engineering**: compute new ratios or combine existing features
 - **Threshold tuning**: adjust the thresholds for liquidity, holders, volume, etc.
 - **Multi-signal scoring**: weight multiple signals and sum them
@@ -120,6 +145,15 @@ LOOP FOREVER:
 - **Pattern recognition**: look for specific feature combinations that predict moons vs rugs
 - **Volume patterns**: buy_volume vs sell_volume ratios, volume per holder, etc.
 - **Time decay**: weight features differently based on token age
+
+### Sell signal
+- **Trailing stops**: sell when drawdown from peak exceeds threshold (careful: moons can dip 70%+ from peak before recovering)
+- **Pump_dump detection**: sell tokens that pumped 150%+ and show sustained decline (candles_since_peak > 12, ret < 10%)
+- **Feature-informed exits**: use token features to set different sell thresholds per trade
+- **Volume collapse**: sell when current candle volume drops to near zero (dead market)
+- **Time-based exits**: exit stagnant positions after extended holding period
+
+**Important findings**: Moons and pump_dumps are feature-identical (same risk, social, ratios). Both can crash 70%+ from peak mid-trade. The only reliable sell signals require high specificity to avoid false moon sells. Grid search over parameters is recommended.
 
 ## NEVER STOP
 

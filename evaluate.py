@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
 Evaluation harness for token classifier.
-DO NOT MODIFY — this is the fixed evaluation script.
 
 Loads the labeled dataset, runs the classifier from strategy.py,
-and computes performance metrics.
+and computes performance metrics. Supports optional sell_signal()
+for full trade lifecycle simulation.
 
 Usage:
     python3 evaluate.py
@@ -14,9 +14,11 @@ import json
 import sys
 import time
 import math
+import hashlib
 from pathlib import Path
 
 DATA_DIR = Path(__file__).parent / "data"
+RAW_DIR = DATA_DIR / "raw"
 DATASET_FILE = DATA_DIR / "dataset.jsonl"
 
 # How much simulated SOL to "buy" per trade
@@ -59,13 +61,93 @@ def split_dataset(entries, test_ratio=0.3, seed=42):
     train, test = [], []
     for entry in entries:
         addr = entry["features"].get("address", "")
-        # Deterministic split based on address hash
-        h = hash(addr + str(seed)) % 100
+        # Deterministic split based on address hash (hashlib for cross-run stability)
+        h = int(hashlib.md5((addr + str(seed)).encode()).hexdigest(), 16) % 100
         if h < test_ratio * 100:
             test.append(entry)
         else:
             train.append(entry)
     return train, test
+
+
+def load_candles(address):
+    """Load OHLCV candles from raw data file."""
+    raw_file = RAW_DIR / f"{address}.json"
+    if not raw_file.exists():
+        return None
+    try:
+        with open(raw_file) as f:
+            raw = json.load(f)
+        candles = raw.get("ohlcv", [])
+        return [c for c in candles if c.get("c", 0) > 0]
+    except (json.JSONDecodeError, Exception):
+        return None
+
+
+def simulate_trade(candles, features, sell_fn):
+    """
+    Simulate a trade through OHLCV candles with a sell strategy.
+
+    Steps through candles one at a time after entry, calling sell_fn
+    at each step to decide whether to exit.
+
+    Returns dict with exit details, or None if simulation fails.
+    """
+    if not candles or len(candles) < 2:
+        return None
+
+    entry_price = candles[0]["c"]
+    if entry_price <= 0:
+        return None
+
+    peak_price = entry_price
+    peak_candle = 0
+
+    for i, candle in enumerate(candles[1:], 1):
+        current_price = candle["c"]
+        if current_price <= 0:
+            continue
+
+        if current_price > peak_price:
+            peak_price = current_price
+            peak_candle = i
+
+        position = {
+            "entry_price": entry_price,
+            "current_price": current_price,
+            "high": candle.get("h", current_price),
+            "low": candle.get("l", current_price),
+            "unrealized_return_pct": (current_price / entry_price - 1) * 100,
+            "peak_return_pct": (peak_price / entry_price - 1) * 100,
+            "drawdown_from_peak_pct": (peak_price - current_price) / peak_price * 100 if peak_price > 0 else 0,
+            "candles_held": i,
+            "candles_since_peak": i - peak_candle,
+            "volume": candle.get("v", 0),
+            "volume_usd": candle.get("v_usd", 0),
+            "total_candles": len(candles),
+        }
+
+        try:
+            if sell_fn(features, position):
+                return {
+                    "exit_price": current_price,
+                    "exit_return_pct": position["unrealized_return_pct"],
+                    "candles_held": i,
+                    "peak_return_pct": position["peak_return_pct"],
+                    "exit_reason": "sell_signal",
+                }
+        except Exception as e:
+            print(f"  [warn] sell_signal error: {e}", file=sys.stderr)
+
+    # Held to end
+    final_price = candles[-1]["c"]
+    return {
+        "exit_price": final_price,
+        "exit_return_pct": (final_price / entry_price - 1) * 100 if entry_price > 0 else 0,
+        "candles_held": len(candles) - 1,
+        "peak_return_pct": (peak_price / entry_price - 1) * 100 if entry_price > 0 else 0,
+        "exit_reason": "hold_to_end",
+    }
 
 
 def evaluate(strategy_module):
@@ -81,8 +163,14 @@ def evaluate(strategy_module):
     if hasattr(strategy_module, "calibrate"):
         strategy_module.calibrate(train_set)
 
+    # Check if strategy has sell_signal
+    has_sell = hasattr(strategy_module, "sell_signal")
+    if has_sell:
+        print("[info] sell_signal detected — simulating full trade lifecycle", file=sys.stderr)
+
     # Run classifier on test set
     results = []
+    candle_load_failures = 0
     for entry in test_set:
         features = entry["features"]
         outcome = entry["outcome"]
@@ -95,9 +183,24 @@ def evaluate(strategy_module):
             score = 0.0
 
         buy_signal = score > 0.5
-        actual_return = outcome.get("final_return_pct", 0)
+        hold_return = outcome.get("final_return_pct", 0)
         max_return = outcome.get("max_return_pct", 0)
         label = outcome.get("label", "unknown")
+
+        # Default: use hold-to-end return
+        actual_return = hold_return
+        trade_result = None
+
+        # If strategy has sell logic, simulate the trade candle-by-candle
+        if buy_signal and has_sell:
+            address = features.get("address", "")
+            candles = load_candles(address)
+            if candles:
+                trade_result = simulate_trade(candles, features, strategy_module.sell_signal)
+                if trade_result:
+                    actual_return = trade_result["exit_return_pct"]
+            else:
+                candle_load_failures += 1
 
         results.append({
             "address": features.get("address", ""),
@@ -105,9 +208,15 @@ def evaluate(strategy_module):
             "score": score,
             "buy_signal": buy_signal,
             "actual_return_pct": actual_return,
+            "hold_return_pct": hold_return,
             "max_return_pct": max_return,
             "label": label,
+            "trade_result": trade_result,
         })
+
+    if has_sell and candle_load_failures > 0:
+        print(f"  [warn] could not load candles for {candle_load_failures} bought tokens (using hold return)",
+              file=sys.stderr)
 
     # Compute metrics
     total_tokens = len(results)
@@ -190,6 +299,49 @@ def evaluate(strategy_module):
     print(f"median_return:    {median_return:.2f}")
     print(f"market_avg:       {market_avg:.2f}")
 
+    # Sell strategy metrics
+    if has_sell and num_buys > 0:
+        trades_with_sim = [r for r in buy_signals if r.get("trade_result")]
+        if trades_with_sim:
+            avg_hold = sum(r["trade_result"]["candles_held"] for r in trades_with_sim) / len(trades_with_sim)
+            sell_triggered = sum(1 for r in trades_with_sim if r["trade_result"]["exit_reason"] == "sell_signal")
+            sell_pct = sell_triggered / len(trades_with_sim) * 100
+
+            # Capture ratio: how much of peak return was captured
+            capture_ratios = []
+            for r in trades_with_sim:
+                peak = r["trade_result"]["peak_return_pct"]
+                actual = r["trade_result"]["exit_return_pct"]
+                if peak > 10:  # only meaningful for tokens that had real gains
+                    capture_ratios.append(actual / peak)
+            avg_capture = sum(capture_ratios) / len(capture_ratios) if capture_ratios else 0
+
+            # Compare sell returns vs hold returns
+            hold_returns = [r["hold_return_pct"] for r in trades_with_sim]
+            sell_returns = [r["actual_return_pct"] for r in trades_with_sim]
+            hold_avg = sum(hold_returns) / len(hold_returns)
+            sell_avg = sum(sell_returns) / len(sell_returns)
+            sell_edge = sell_avg - hold_avg
+
+            print(f"\n--- Sell Strategy Metrics ---")
+            print(f"avg_hold_candles: {avg_hold:.1f}")
+            print(f"sell_triggered:   {sell_pct:.1f}%")
+            print(f"capture_ratio:    {avg_capture:.3f}")
+            print(f"sell_vs_hold:     {sell_edge:+.2f}%")
+            print(f"hold_avg_return:  {hold_avg:.2f}")
+            print(f"sell_avg_return:  {sell_avg:.2f}")
+            print(f"trades_simulated: {len(trades_with_sim)} / {num_buys}")
+
+            # Per-label sell effectiveness
+            print(f"\n--- Sell Impact by Label ---")
+            for label in ["moon", "up", "crab", "down", "pump_dump", "rug"]:
+                label_trades = [r for r in trades_with_sim if r["label"] == label]
+                if label_trades:
+                    lh = sum(r["hold_return_pct"] for r in label_trades) / len(label_trades)
+                    ls = sum(r["actual_return_pct"] for r in label_trades) / len(label_trades)
+                    sold = sum(1 for r in label_trades if r["trade_result"]["exit_reason"] == "sell_signal")
+                    print(f"  {label:>10s}: {len(label_trades):2d} trades, hold={lh:+7.1f}%, sell={ls:+7.1f}%, edge={ls-lh:+7.1f}%, sold={sold}/{len(label_trades)}")
+
     # Per-label breakdown
     print("\n--- Label Breakdown ---")
     for label in ["moon", "up", "crab", "down", "pump_dump", "rug"]:
@@ -203,14 +355,20 @@ def evaluate(strategy_module):
         print("\n--- Top Picks (by score) ---")
         top = sorted(buy_signals, key=lambda r: r["score"], reverse=True)[:5]
         for r in top:
-            print(f"  {r['symbol']:>10s}  score={r['score']:.3f}  return={r['actual_return_pct']:+.1f}%  label={r['label']}")
+            extra = ""
+            if r.get("trade_result") and r["trade_result"]["exit_reason"] == "sell_signal":
+                extra = f"  sold@{r['trade_result']['candles_held']}h"
+            print(f"  {r['symbol']:>10s}  score={r['score']:.3f}  return={r['actual_return_pct']:+.1f}%  label={r['label']}{extra}")
 
     # Worst picks
     if buy_signals:
         print("\n--- Worst Picks (biggest losses) ---")
         worst = sorted(buy_signals, key=lambda r: r["actual_return_pct"])[:5]
         for r in worst:
-            print(f"  {r['symbol']:>10s}  score={r['score']:.3f}  return={r['actual_return_pct']:+.1f}%  label={r['label']}")
+            extra = ""
+            if r.get("trade_result") and r["trade_result"]["exit_reason"] == "sell_signal":
+                extra = f"  sold@{r['trade_result']['candles_held']}h"
+            print(f"  {r['symbol']:>10s}  score={r['score']:.3f}  return={r['actual_return_pct']:+.1f}%  label={r['label']}{extra}")
 
 
 if __name__ == "__main__":

@@ -5,6 +5,9 @@ THIS IS THE FILE YOU MODIFY.
 The score_token function receives a feature dict and returns a score 0.0-1.0.
 Tokens scoring > 0.5 get a "buy" signal.
 
+The sell_signal function receives features + position state and returns
+True (sell) or False (hold) for full trade lifecycle simulation.
+
 Available features (all numeric unless noted):
     address, name, symbol                    — identifiers (string)
     creation_time                            — unix timestamp
@@ -25,35 +28,64 @@ Available features (all numeric unless noted):
     early_volatility                         — price range / entry in first ~6 hours (%)
     early_volume_total                       — total volume in first ~6 hours
     candle_count                             — number of valid OHLCV candles
+
+Position dict (for sell_signal):
+    entry_price                              — price at buy
+    current_price                            — current candle close
+    high, low                                — current candle high/low
+    unrealized_return_pct                    — current % return
+    peak_return_pct                          — max % return seen so far
+    drawdown_from_peak_pct                   — % drop from peak
+    candles_held                             — hours since entry (1H candles)
+    candles_since_peak                       — hours since highest price was seen
+    volume, volume_usd                       — current candle volume
+    total_candles                            — total candles in observation
 """
 
 
 _stats = {}
+_sell_stats = {}
 
 
 def calibrate(train_set):
-    """Learn feature averages per label from training data."""
-    global _stats
+    """Learn feature statistics per label from training data."""
+    global _stats, _sell_stats
     by_label = {}
     for entry in train_set:
         label = (entry.get("outcome") or {}).get("label", "unknown")
         if label not in by_label:
-            by_label[label] = []
-        by_label[label].append(entry["features"])
+            by_label[label] = {"features": [], "outcomes": []}
+        by_label[label]["features"].append(entry["features"])
+        by_label[label]["outcomes"].append(entry.get("outcome", {}))
 
-    # Compute median values for key features per label
     def median(vals):
         s = sorted(vals)
         n = len(s)
         return s[n // 2] if n else 0
 
-    for label, feats_list in by_label.items():
+    # Buy-side calibration: feature medians per label
+    for label, data in by_label.items():
+        feats_list = data["features"]
         _stats[label] = {}
         for key in ["liquidity", "holder_count", "buy_sell_ratio", "volume_24h",
                      "buy_volume_usd", "sell_volume_usd", "early_volatility",
                      "volume_per_holder", "early_price_change_pct"]:
             vals = [f.get(key, 0) for f in feats_list if f.get(key, 0) != 0]
             _stats[label][key] = median(vals) if vals else 0
+
+    # Sell-side calibration: outcome stats per label
+    for label, data in by_label.items():
+        outcomes = data["outcomes"]
+        max_returns = [o.get("max_return_pct", 0) for o in outcomes if o.get("max_return_pct", 0) > 0]
+        final_returns = [o.get("final_return_pct", 0) for o in outcomes]
+        drawdowns = [o.get("max_drawdown_pct", 0) for o in outcomes if o.get("max_drawdown_pct", 0) > 0]
+
+        _sell_stats[label] = {
+            "median_max_return": median(max_returns) if max_returns else 0,
+            "median_final_return": median(final_returns) if final_returns else 0,
+            "median_drawdown": median(drawdowns) if drawdowns else 0,
+            "count": len(outcomes),
+        }
 
 
 def score_token(features: dict) -> float:
@@ -128,8 +160,10 @@ def score_token(features: dict) -> float:
 
     # --- Trade count activity ---
     trades = features.get("trade_count_24h", 0)
-    if trades > 5000:
-        score += 0.04  # high trading activity
+    if trades > 10000:
+        score += 0.06  # very high trading activity
+    elif trades > 5000:
+        score += 0.04
 
     # --- Liquidity depth ---
     if liquidity > 50000:
@@ -180,3 +214,33 @@ def score_token(features: dict) -> float:
         score -= 0.03
 
     return max(0.0, min(1.0, score))
+
+
+def sell_signal(features: dict, position: dict) -> bool:
+    """
+    Decide whether to sell a position.
+
+    Grid-search-optimized sell logic. Key findings from candle analysis:
+    - Moons and pump_dumps are feature-identical (same risk, social, ratios)
+    - Both can pump 100%+, but pump_dumps crash while moons recover
+    - Critical insight: moons with peak > 150% NEVER drop below +10% return
+    - Pump_dumps cross below +10% within hours of peak, then keep crashing
+
+    Rule: sell if peak > 150%, 12h+ past peak, and return dropped below +10%.
+    Catches 6/8 pump_dumps (+20.6% edge) with zero false moon sells.
+
+    Returns True to sell, False to hold.
+    """
+    ret = position["unrealized_return_pct"]
+    peak_ret = position["peak_return_pct"]
+    candles_since_peak = position.get("candles_since_peak", 0)
+
+    # Pump_dump catcher: token pumped 150%+ then sustained decline
+    # peak > 150% means it's either a moon or pump_dump (not crab/up/down)
+    # Key finding: moons with peak > 150% NEVER drop below +10% return
+    # Pump_dumps cross below +10% within 12h of peak, then keep crashing
+    # Selling at +10% (still positive) vs holding to avg -49% = huge edge
+    if peak_ret > 150 and candles_since_peak > 12 and ret < 10:
+        return True
+
+    return False
